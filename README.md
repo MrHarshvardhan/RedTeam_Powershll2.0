@@ -31,5 +31,5 @@ Feel free to contribute by submitting bug reports or feature requests.
 
 
 
-
+## Example
 powershell "IEX(New-Object Net.WebClient).downloadString('https://raw.githubusercontent.com/carlospolop/PEASS-ng/master/winPEAS/winPEASps1/winPEAS.ps1')"
