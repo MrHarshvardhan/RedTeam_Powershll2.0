@@ -1,6 +1,3 @@
-Thanks for the clarification — let's go 100% Python-only, no PowerShell, no external binaries, no cracking, real-life AD, with domain user credentials, and the objective: gain full DC access.
-
-
 ---
 
 Your Current Access
